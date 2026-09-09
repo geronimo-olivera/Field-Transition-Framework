@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+	<types>
+		<members>FieldTransitionConditionEvaluator</members>
+		<members>FieldTransitionFrameworkTest</members>
+		<members>FieldTransitionMetadataService</members>
+		<members>FieldTransitionRequirementController</members>
+		<members>FieldTransitionRequirementService</members>
+		<members>FieldTransitionValidator</members>
+		<name>ApexClass</name>
+	</types>
+	<types>
+		<members>Field_Transition_Rule__mdt</members>
+		<members>Transition_Condition__mdt</members>
+		<name>CustomObject</name>
+	</types>
+	<types>
+		<members>Field_Transition_Rule__mdt-Field Transition Rule Layout</members>
+		<members>Transition_Condition__mdt-Transition Condition Layout</members>
+		<name>Layout</name>
+	</types>
+	<types>
+		<members>fieldTransitionChecklist</members>
+		<name>LightningComponentBundle</name>
+	</types>
+	<types>
+		<members>Field_Transition_Blocked_Error</members>
+		<members>Field_Transition_Checklist_Title</members>
+		<members>Field_Transition_Checklist_Empty_State</members>
+		<name>CustomLabel</name>
+	</types>
+	<version>62.0</version>
+</Package>
