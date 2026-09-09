@@ -26,19 +26,39 @@ Only `before update` matters — an `insert` has no "from" value to compare, so 
 
 ## Creating a rule
 
-1. New `Field_Transition_Rule__mdt` record.
-2. `Object_API_Name__c` — the object, e.g. `Opportunity`.
-3. `Field_API_Name__c` — the field being watched, e.g. `StageName`.
-4. `To_Value__c` — the value that triggers this rule, e.g. `Closed Won`.
-5. `From_Value__c` — optional. Leave it blank if the rule should apply no matter what the field's previous value was; set it if the rule is specific to one transition, e.g. `Negotiation/Review`.
-6. `Is_Active__c` — `true`, or the rule is silently ignored.
-7. `Order__c` — only matters if more than one active rule targets the same object/field; doesn't affect whether a rule blocks, just the order rules are evaluated in.
+This repo ships the two custom metadata *types* — no rule or condition records, since those are your org's own configuration. Create them either way CMDT records normally get created:
+
+- **Setup UI** — Setup → Custom Metadata Types → **Field Transition Rule** / **Transition Condition** → Manage Records → New.
+- **Source** — add a `.md-meta.xml` file under `force-app/main/default/customMetadata/` and deploy it. For example, `Field_Transition_Rule.Prospecting_to_Qualification.md-meta.xml`:
+
+  ```xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <CustomMetadata xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://soap.sforce.com/2006/04/metadata">
+      <label>Prospecting to Qualification</label>
+      <protected>false</protected>
+      <values><field>Object_API_Name__c</field><value xsi:type="xsd:string">Opportunity</value></values>
+      <values><field>Field_API_Name__c</field><value xsi:type="xsd:string">StageName</value></values>
+      <values><field>From_Value__c</field><value xsi:type="xsd:string">Prospecting</value></values>
+      <values><field>To_Value__c</field><value xsi:type="xsd:string">Qualification</value></values>
+      <values><field>Is_Active__c</field><value xsi:type="xsd:boolean">true</value></values>
+      <values><field>Order__c</field><value xsi:type="xsd:double">10</value></values>
+  </CustomMetadata>
+  ```
+
+Either way, the fields are:
+
+1. `Object_API_Name__c` — the object, e.g. `Opportunity`.
+2. `Field_API_Name__c` — the field being watched, e.g. `StageName`.
+3. `To_Value__c` — the value that triggers this rule, e.g. `Closed Won`.
+4. `From_Value__c` — optional. Leave it blank if the rule should apply no matter what the field's previous value was; set it if the rule is specific to one transition, e.g. `Negotiation/Review`.
+5. `Is_Active__c` — `true`, or the rule is silently ignored.
+6. `Order__c` — the order rules are evaluated in when more than one is active for the same object/field. It does **not** make rules mutually exclusive: if two active rules both match the same transition (e.g. one scoped to `From_Value__c = Prospecting` and another left blank so it matches from anywhere), both apply, and their conditions are effectively ANDed together — every matching rule has to pass independently, it isn't "first match wins."
 
 A rule with no active conditions attached never blocks anything — it's allowed unconditionally the moment it matches.
 
 ## Creating conditions
 
-Each condition belongs to one rule (`Field_Transition_Rule__c`) and has a `Condition_Type__c` that determines which of the other fields apply.
+Each condition belongs to one rule (`Field_Transition_Rule__c`) and has a `Condition_Type__c` that determines which of the other fields apply. Set `Message__c` on every condition you want shown in the checklist LWC with a human-readable explanation (e.g. "At least one Decision Maker contact role is required") — if you leave it blank, the checklist falls back to showing the condition record's own label instead.
 
 ### Child Record Exists
 
@@ -152,6 +172,8 @@ NumberOfEmployees < 1000
 Amount = 12345.67
 ```
 
+In a multi-currency org, `Amount` comparisons are against the record's raw stored amount, in whatever currency that record is in — there's no conversion to a corporate/reference currency. A rule like `Amount > 10000` means something different for a USD Opportunity than a JPY one; scope separate rules per currency if that matters for you.
+
 ### Boolean
 
 ```
@@ -205,6 +227,8 @@ The only exception is multi-select picklists, where a blank field is treated as 
 
 It groups its output by governed field, shows every reachable next value from the record's current state, and marks each condition as met or not yet met. It's read-only — it never blocks a save, it only reports.
 
+The checklist shows the same thing to every user who can see the record and the page it's on — it doesn't hide a condition or its `Message__c` based on the viewer's field-level security. That's a deliberate default (everyone sees the same requirements), not an oversight; if your org needs the checklist itself restricted by FLS, that's a change to make in `FieldTransitionRequirementService` before deploying it.
+
 ## What you should NOT do
 
 - Don't call `FieldTransitionValidator` from anywhere except a `before update` context (or something that mimics one, like a batch that supplies its own before/after pair). It compares old vs. new field values; without a genuine "before" state it can't tell what's actually transitioning.
@@ -212,3 +236,4 @@ It groups its output by governed field, shows every reachable next value from th
 - Don't rely on a field reference in `Field_API_Name__c`, `Child_Object_API_Name__c`, or a criteria string surviving a later field rename or deletion without you noticing — a rule or condition that references something that no longer exists is skipped/treated as unsatisfied and logged via `System.debug(LoggingLevel.ERROR, ...)`, rather than throwing and taking down every other save on that object. Check debug logs after any schema change touching a field these records reference.
 - Don't expect `!=`/`NOT IN`/`>` to treat a blank field as a pass — see [Null handling](#null-handling) above.
 - Don't assume an absolute datetime literal means the same instant for every user — add `Z` if you need it to.
+- Don't assume unlimited headroom for rules and conditions — Custom Metadata Type storage is capped org-wide (10 MB across every custom metadata type in the org, not just this framework's), and each Long Text Area field on a condition counts as a flat 255 bytes toward that regardless of how much text it actually holds. That's room for many thousands of conditions in practice, but it's not infinite, and it's shared with whatever other CMDT your org uses.
