@@ -78,3 +78,7 @@ That deploys the Apex classes, both custom metadata types with their fields and 
 ## Documentation
 
 - [`docs/USAGE.md`](docs/USAGE.md) — wiring it into a trigger, creating rules and conditions, every operator and field type with worked examples (string, picklist, multi-select picklist, number/currency/percent, boolean, date, datetime), adding the checklist LWC to a page, and what to avoid.
+
+## License
+
+Released under the [MIT License](LICENSE).
