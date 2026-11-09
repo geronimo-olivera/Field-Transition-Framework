@@ -2,6 +2,8 @@
 
 A metadata-driven Apex framework for Salesforce that blocks a field from changing to a configured value until a set of configurable conditions are met — checks against the record itself, against related child records, or both. Ships with a Lightning web component that shows a record's outstanding requirements before you even try to save.
 
+[![Deploy to Salesforce](https://raw.githubusercontent.com/afawcett/githubsfdeploy/master/deploy.png)](https://githubsfdeploy.herokuapp.com?owner=geronimo-olivera&repo=Field-Transition-Framework&ref=master)
+
 ## Purpose
 
 Stage-gating logic (an Opportunity can't move to a given stage until X, Y, Z are true) tends to end up hardcoded in validation rules or Apex, spread across the org, hard to see in one place and hard to change without a deploy. The goal of this framework is:
@@ -66,6 +68,14 @@ One or more per rule. **Every** active condition on a rule must be satisfied for
 It does **not** cover everything, and it isn't meant to. Multi-select picklist and record-type comparisons, for example, exercise the exact same code paths already covered by the other operator tests, so they aren't duplicated here — but they also depend on fields/record types this repo has no way of guaranteeing exist in your org, so there's no dedicated test for them either. If your org configures rules using field types or scenarios this test class doesn't touch, that's on you to cover with your own tests, the same way it would be for any framework you install rather than write yourself.
 
 ## Deploy to an org
+
+### One click
+
+[![Deploy to Salesforce](https://raw.githubusercontent.com/afawcett/githubsfdeploy/master/deploy.png)](https://githubsfdeploy.herokuapp.com?owner=geronimo-olivera&repo=Field-Transition-Framework&ref=master)
+
+Click the button, choose production or sandbox, and log in to the org. The deploy runs through [GitHub Salesforce Deploy](https://github.com/afawcett/githubsfdeploy), a free open-source tool by Andrew Fawcett. Try it in a sandbox first: a production deploy also runs your org's Apex tests.
+
+### From VS Code
 
 You need [VS Code with the Salesforce Extension Pack](https://developer.salesforce.com/tools/vscode/) and an authenticated org.
 
