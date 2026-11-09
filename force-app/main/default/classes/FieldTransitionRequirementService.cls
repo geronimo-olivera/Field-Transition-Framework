@@ -1,7 +1,8 @@
 /**
  * File Name   :	FieldTransitionRequirementService.cls
  * Description :	Reports, per governed field on a record, which reachable transitions exist and which
- *                  of their conditions are already satisfied. Read-only — unlike FieldTransitionValidator,
+ *                  of their conditions are already satisfied. Conditions are evaluated by the same class, in the same
+ *                  mode, as FieldTransitionValidator, so the checklist and the save always agree. Read-only — unlike FieldTransitionValidator,
  *                  it never blocks a save. Built for FieldTransitionRequirementController's LWC. A rule or
  *                  condition referencing a field that no longer exists is skipped/logged rather than
  *                  thrown, so one stale record doesn't take down the checklist for the whole object.
@@ -95,8 +96,7 @@ public inherited sharing class FieldTransitionRequirementService {
                 System.debug(LoggingLevel.ERROR, 'Failed to evaluate Transition_Condition__mdt "' + condition.DeveloperName + '": ' + ex.getMessage());
                 satisfied = false;
             }
-            String message = String.isNotBlank(condition.Message__c) ? condition.Message__c : condition.MasterLabel;
-            transition.conditions.add(new ConditionRequirement(message, condition.Condition_Type__c, satisfied));
+            transition.conditions.add(new ConditionRequirement(FieldTransitionValidator.conditionMessage(condition), condition.Condition_Type__c, satisfied));
             if (!satisfied) { transition.allSatisfied = false; }
         }
         return transition;

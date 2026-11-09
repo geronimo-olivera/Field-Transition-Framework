@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <classAccesses>
+        <apexClass>FieldTransitionRequirementController</apexClass>
+        <enabled>true</enabled>
+    </classAccesses>
+    <customMetadataTypeAccesses>
+        <enabled>true</enabled>
+        <name>Field_Transition_Rule__mdt</name>
+    </customMetadataTypeAccesses>
+    <customMetadataTypeAccesses>
+        <enabled>true</enabled>
+        <name>Transition_Condition__mdt</name>
+    </customMetadataTypeAccesses>
+    <description>Lets users see the Transition Checklist component on record pages. Grants the Apex class and read access to the two rule metadata types; without it, the component shows an access error. Blocking saves needs no permission.</description>
+    <hasActivationRequired>false</hasActivationRequired>
+    <label>Field Transition Checklist</label>
+</PermissionSet>

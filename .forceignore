@@ -1,0 +1,8 @@
+# Not deployed to Salesforce
+**/__tests__/**
+**/jsconfig.json
+**/.eslintrc.json
+node_modules/
+package.json
+package-lock.json
+jest.config.js

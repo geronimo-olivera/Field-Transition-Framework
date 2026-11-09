@@ -29,5 +29,9 @@
 		<members>Field_Transition_Checklist_Empty_State</members>
 		<name>CustomLabel</name>
 	</types>
-	<version>62.0</version>
+	<version>66.0</version>
+	<types>
+		<members>Field_Transition_Checklist</members>
+		<name>PermissionSet</name>
+	</types>
 </Package>

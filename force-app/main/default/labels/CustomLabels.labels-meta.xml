@@ -5,8 +5,8 @@
         <categories>FieldTransitionValidator</categories>
         <language>en_US</language>
         <protected>false</protected>
-        <shortDescription>Error shown when FieldTransitionValidator blocks a field transition</shortDescription>
-        <value>Cannot set {0} to &quot;{1}&quot;: one or more requirements for this transition have not been met.</value>
+        <shortDescription>Blocked transition error: {0} field label, {1} value, {2} what is missing</shortDescription>
+        <value>Cannot change {0} to &quot;{1}&quot;. Still missing: {2}.</value>
     </labels>
     <labels>
         <fullName>Field_Transition_Checklist_Title</fullName>

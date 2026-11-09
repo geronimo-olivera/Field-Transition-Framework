@@ -22,7 +22,17 @@ There's also a single-record overload if you're calling it from somewhere that i
 FieldTransitionValidator.validateTransitions(newOpportunity, oldOpportunity);
 ```
 
-Only `before update` matters — an `insert` has no "from" value to compare, so a rule with a blank `From_Value__c` would otherwise fire on every insert that happens to land on `To_Value__c`, which isn't a transition at all.
+By default only `before update` matters — an `insert` has no "from" value to compare. But creating a record directly at the final value would skip every requirement, so a rule can opt in with **`Apply_On_Insert__c`**: then a record created with `To_Value__c` is checked too. That only applies to rules with a blank `From_Value__c`, and the trigger must also run in `before insert`:
+
+```apex
+trigger OpportunityTrigger on Opportunity (before insert, before update) {
+    FieldTransitionValidator.validateTransitions(Trigger.new, Trigger.oldMap);
+}
+```
+
+On insert, `Trigger.oldMap` is null and only `Apply_On_Insert__c` rules are checked. Child-record conditions can't be met on insert, since the record has no children yet: a `Child Record Exists` condition blocks it, and `All Matching Children Satisfy` passes.
+
+When a save is blocked, the user sees the field's label, the value and what's missing, for example *Cannot change Stage to "Closed Won". Still missing: A Decision Maker contact role; An amount above zero.* Each requirement is its condition's `Message__c`, or its label when `Message__c` is blank. The text is the `Field_Transition_Blocked_Error` custom label, so it can be translated.
 
 ## Creating a rule
 
@@ -118,7 +128,7 @@ One comparison per condition record, always `FieldApiName OPERATOR Value` — no
 | `IN`, `NOT IN` | Match against a parenthesized list, e.g. `('A', 'B')`. |
 | `INCLUDES`, `EXCLUDES` | Multi-select picklists only. |
 
-`Field.Amount = null` and `Field != null` are the only way to test for blank — see [Null handling](#null-handling) below for what every other operator does with a blank field.
+`Amount = null` and `Amount != null` test for blank explicitly — see [Null handling](#null-handling) below for what every other operator does with a blank field.
 
 ### String
 
@@ -142,23 +152,26 @@ LeadSource NOT IN ('Purchased List', 'Other')
 
 ### Multi-select Picklist
 
-Multi-select picklists store their selected values internally separated by `;`. `=`/`!=` test for a single exact value being selected (among possibly others); `INCLUDES`/`EXCLUDES` test for combinations, matching real SOQL semantics:
+Multi-select picklists store their selected values separated by `;`. The operators follow SOQL exactly:
 
 ```
 Interests__c = 'Golf'
+Interests__c = 'Golf;Tennis'
 Interests__c != 'Golf'
+Interests__c IN ('Golf', 'Golf;Tennis')
 Interests__c INCLUDES ('Golf')
 Interests__c INCLUDES ('Golf;Tennis')
 Interests__c INCLUDES ('Golf', 'Tennis')
 Interests__c EXCLUDES ('Skiing')
 ```
 
-- `INCLUDES ('Golf;Tennis')` — one quoted group with a `;` inside — means **both** Golf AND Tennis must be selected.
-- `INCLUDES ('Golf', 'Tennis')` — two separate quoted groups — means Golf **or** Tennis (or both) is enough; any one group fully matching is a pass.
-- You can combine both inside the same list: `INCLUDES ('Golf;Tennis', 'Skiing')` passes if either (Golf and Tennis are both selected) or (Skiing is selected).
-- `EXCLUDES` is the negation of the same grouping logic — `EXCLUDES ('Skiing')` passes if Skiing is not among the selected values.
-- On a completely blank multi-select field, every `EXCLUDES` comparison passes (there's nothing selected to exclude) and every `INCLUDES`/`=` comparison fails.
-- `IN`/`NOT IN` also work on multi-select fields and behave like `INCLUDES`/`EXCLUDES` with only single-value (no `;`) groups — match if any listed value is selected.
+- `=` means **exactly** that set of selections, in any order: `= 'Golf'` matches a record with only Golf selected, not one with Golf and Tennis. `!=` is the opposite.
+- `IN` matches if the field is exactly one of the listed sets. `NOT IN` is the opposite.
+- `INCLUDES ('Golf;Tennis')` — one quoted group with a `;` inside — means **both** Golf AND Tennis must be selected, among possibly others.
+- `INCLUDES ('Golf', 'Tennis')` — two separate quoted groups — means Golf **or** Tennis (or both) is enough.
+- You can combine both: `INCLUDES ('Golf;Tennis', 'Skiing')` passes if Golf and Tennis are both selected, or Skiing is.
+- `EXCLUDES` is the negation of the same grouping logic.
+- A blank multi-select satisfies `= null`, `!=`, `NOT IN` and `EXCLUDES`, and nothing else.
 
 ### Number, Currency, Percent
 
@@ -195,9 +208,9 @@ CloseDate = THIS_WEEK
 CloseDate >= LAST_N_DAYS:30
 ```
 
-Supported literals: `TODAY`, `YESTERDAY`, `TOMORROW`, `THIS_WEEK`, `LAST_WEEK`, `NEXT_WEEK`, `THIS_MONTH`, `LAST_MONTH`, `NEXT_MONTH`, `THIS_QUARTER`, `LAST_QUARTER`, `NEXT_QUARTER`, `THIS_YEAR`, `LAST_YEAR`, `NEXT_YEAR`, and the `:n`-suffixed family — `LAST_N_DAYS:n`, `NEXT_N_DAYS:n`, `N_DAYS_AGO:n`, `LAST_N_WEEKS:n`, `NEXT_N_WEEKS:n`, `N_WEEKS_AGO:n`, `LAST_N_MONTHS:n`, `NEXT_N_MONTHS:n`, `N_MONTHS_AGO:n`, `LAST_N_QUARTERS:n`, `NEXT_N_QUARTERS:n`, `N_QUARTERS_AGO:n`, `LAST_N_YEARS:n`, `NEXT_N_YEARS:n`, `N_YEARS_AGO:n`. Weeks start on Sunday; quarters are calendar quarters. **Fiscal-year literals aren't supported** — they depend on org-specific fiscal year settings this framework has no visibility into.
+Supported literals: `TODAY`, `YESTERDAY`, `TOMORROW`, `THIS_WEEK`, `LAST_WEEK`, `NEXT_WEEK`, `THIS_MONTH`, `LAST_MONTH`, `NEXT_MONTH`, `THIS_QUARTER`, `LAST_QUARTER`, `NEXT_QUARTER`, `THIS_YEAR`, `LAST_YEAR`, `NEXT_YEAR`, and the `:n`-suffixed family — `LAST_N_DAYS:n`, `NEXT_N_DAYS:n`, `N_DAYS_AGO:n`, `LAST_N_WEEKS:n`, `NEXT_N_WEEKS:n`, `N_WEEKS_AGO:n`, `LAST_N_MONTHS:n`, `NEXT_N_MONTHS:n`, `N_MONTHS_AGO:n`, `LAST_N_QUARTERS:n`, `NEXT_N_QUARTERS:n`, `N_QUARTERS_AGO:n`, `LAST_N_YEARS:n`, `NEXT_N_YEARS:n`, `N_YEARS_AGO:n`. Weeks start on the running user's locale's first day of the week, as in SOQL (Sunday for en_US, Monday for many other locales); quarters are calendar quarters. The boundaries match SOQL: `LAST_N_DAYS:n` includes today, `NEXT_N_DAYS:n` starts tomorrow, and the `N_WEEKS`, `N_MONTHS`, `N_QUARTERS` and `N_YEARS` literals cover whole periods before or after the current one, leaving the current week, month, quarter or year out. **Fiscal-year literals aren't supported** — they depend on org-specific fiscal year settings this framework has no visibility into.
 
-Single-day literals (`TODAY`, `N_DAYS_AGO:n`, etc.) support all six operators. Range literals (`THIS_WEEK`, `LAST_MONTH`, `THIS_QUARTER`, etc.) only support `=` (falls within the range) and `!=` (falls outside it) — `>`/`<` against a range doesn't have an unambiguous meaning, so it throws rather than guessing.
+Every literal supports all six operators, with SOQL's meaning: `=` is within the range, `!=` outside it, `>` after its last day, `>=` from its first day, `<` before its first day, and `<=` up to its last day. A single-day literal such as `TODAY` is a range of one day.
 
 ### Date/Time
 
@@ -213,9 +226,20 @@ CreatedDate > 2026-01-01T09:00:00Z
 
 ### Null handling
 
-`Amount = null` and `Amount != null` are the explicit way to test for blank. Every other operator (`>`, `<`, `LIKE`, `IN`, `NOT IN`, etc.) treats a blank field as **not satisfying the comparison**, full stop — `Amount > 100` on a blank Amount is `false`, not an error and not vacuously true. This is deliberately consistent across every operator, including `NOT IN`, even though a strict SQL reading might expect `NOT IN` to treat a blank field as automatically matching. If you want "blank is fine, but if it's set it must satisfy X," write two conditions: one `Field = null`... no — since conditions are ANDed, not ORed, that specific "blank OR matches X" shape isn't expressible as two `Parent Field Criteria` conditions on the same rule. Model it as two separate rules instead (one for each acceptable case), or reconsider whether the field should be required in the first place.
+Blank fields behave as in SOQL:
 
-The only exception is multi-select picklists, where a blank field is treated as an empty set: every `EXCLUDES` passes, every `INCLUDES`/`=` fails — see [Multi-select Picklist](#multi-select-picklist) above.
+- `Amount = null` and `Amount != null` test for blank explicitly.
+- `!=`, `NOT IN` and `EXCLUDES` **pass** on a blank field: a blank Amount is not equal to 100, and a blank Type is not in ('A', 'B').
+- Every other operator (`=` with a value, `>`, `<`, `IN`, `LIKE`, `INCLUDES`) **fails** on a blank field.
+
+### Other details that follow SOQL
+
+- Text comparisons with `=`, `!=`, `IN` and `LIKE` ignore case.
+- Id and lookup fields accept the 15- or the 18-character Id: `OwnerId = '005xx000001Sv6A'` matches.
+- In `LIKE`, a backslash makes the next character literal: `Code__c LIKE 'PRJ\_%'` matches a real underscore.
+- Spaces around the operator are optional: `Amount>=100` works.
+
+These rules were verified by comparing the evaluator with real SOQL queries on the same records, for 86 criteria covering every field type, operator and date literal.
 
 ## Adding the checklist LWC to a record page
 
@@ -227,13 +251,27 @@ The only exception is multi-select picklists, where a blank field is treated as 
 
 It groups its output by governed field, shows every reachable next value from the record's current state, and marks each condition as met or not yet met. It's read-only — it never blocks a save, it only reports.
 
+Users need the **Field Transition Checklist** permission set to use it. It grants access to the Apex controller and read access to the two rule metadata types; without it, the component shows an access error. Blocking saves needs no permission at all.
+
+The checklist reloads by itself when the record is saved, and has a Refresh button for changes to related records.
+
+The checklist and the save always agree. Conditions are evaluated without sharing, so a requirement met by a child record the user can't see counts as met in both places. Only pass/fail and the configured messages are shown, never the child records themselves.
+
 The checklist shows the same thing to every user who can see the record and the page it's on — it doesn't hide a condition or its `Message__c` based on the viewer's field-level security. That's a deliberate default (everyone sees the same requirements), not an oversight; if your org needs the checklist itself restricted by FLS, that's a change to make in `FieldTransitionRequirementService` before deploying it.
+
+## Checking your configuration
+
+`FieldTransitionMetadataService.validateConfiguration()` checks every active rule and condition and returns one readable problem per mistake: an object or field that doesn't exist, a `From_Value__c` or `To_Value__c` that isn't an active picklist value, an unknown condition type, a missing or invalid `Parent_Filter_Criteria__c`, a child object or relationship field that doesn't exist or doesn't point to the rule's object, and child criteria that aren't valid SOQL. The test `activeConfigurationInThisOrgIsValid` runs it on every deploy, so a typo fails the deploy instead of blocking users.
+
+## API version
+
+The classes use API 66.0 on purpose. In a scratch org on API 67.0, a query run for a standard user stopped returning records that user can't see, even in a `without sharing` class and with `WITH SYSTEM_MODE`; on API 62.0 to 66.0 it returned them. That would make a rule's answer depend on who saves the record. Keep the classes on 66.0 until that behavior is documented.
 
 ## What you should NOT do
 
-- Don't call `FieldTransitionValidator` from anywhere except a `before update` context (or something that mimics one, like a batch that supplies its own before/after pair). It compares old vs. new field values; without a genuine "before" state it can't tell what's actually transitioning.
+- Don't call `FieldTransitionValidator` from anywhere except `before update`, or `before insert` for `Apply_On_Insert__c` rules (or something that mimics them, like a batch that supplies its own before/after pair). It compares old vs. new field values.
 - Don't combine multiple comparisons in one `Parent_Filter_Criteria__c` with `AND`/`OR` — it's not supported, and the parser will reject it. Use another condition record instead; every active condition on a rule is already ANDed.
 - Don't rely on a field reference in `Field_API_Name__c`, `Child_Object_API_Name__c`, or a criteria string surviving a later field rename or deletion without you noticing — a rule or condition that references something that no longer exists is skipped/treated as unsatisfied and logged via `System.debug(LoggingLevel.ERROR, ...)`, rather than throwing and taking down every other save on that object. Check debug logs after any schema change touching a field these records reference.
-- Don't expect `!=`/`NOT IN`/`>` to treat a blank field as a pass — see [Null handling](#null-handling) above.
+- Don't expect `>`, `<`, `IN` or `LIKE` to treat a blank field as a pass, or `!=` and `NOT IN` to treat it as a failure — see [Null handling](#null-handling) above.
 - Don't assume an absolute datetime literal means the same instant for every user — add `Z` if you need it to.
 - Don't assume unlimited headroom for rules and conditions — Custom Metadata Type storage is capped org-wide (10 MB across every custom metadata type in the org, not just this framework's), and each Long Text Area field on a condition counts as a flat 255 bytes toward that regardless of how much text it actually holds. That's room for many thousands of conditions in practice, but it's not infinite, and it's shared with whatever other CMDT your org uses.

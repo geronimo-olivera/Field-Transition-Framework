@@ -1,0 +1,13 @@
+{
+  "name": "field-transition-framework",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Field Transition Framework for Salesforce",
+  "scripts": {
+    "test": "sfdx-lwc-jest",
+    "test:coverage": "sfdx-lwc-jest --coverage"
+  },
+  "devDependencies": {
+    "@salesforce/sfdx-lwc-jest": "^7.0.0"
+  }
+}

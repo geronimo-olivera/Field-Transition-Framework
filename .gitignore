@@ -10,3 +10,5 @@
 .DS_Store
 .vscode/
 *.log
+node_modules/
+coverage/

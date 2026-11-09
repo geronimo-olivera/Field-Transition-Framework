@@ -5,8 +5,18 @@
  *                  (reports pending requirements without blocking anything). Child-object lookups
  *                  (Child Record Exists, All Matching Children Satisfy) are bulkified through BulkContext
  *                  so a batch of many records costs one query per distinct condition, not one per record.
+ *
+ *                  Runs without sharing on purpose: a transition rule is a business rule, so it must give the same
+ *                  answer for every user. With sharing, a user who can't see a qualifying child record would be
+ *                  blocked by a requirement that is actually met, and the checklist would disagree with the save.
+ *                  Only pass/fail and the configured messages leave this class, never the child records.
+ *
+ *                  Parent Field Criteria follow SOQL's semantics, verified against real SOQL queries: text comparisons
+ *                  ignore case, a blank field satisfies only = null, != and NOT IN (and EXCLUDES), Ids match in their
+ *                  15- or 18-character form, = on a multi-select picklist means exactly that set of values, and date
+ *                  literals use the running user's locale for the first day of the week.
  **/
-public inherited sharing class FieldTransitionConditionEvaluator {
+public without sharing class FieldTransitionConditionEvaluator {
 
     public static final String CONDITION_TYPE_CHILD_RECORD_EXISTS = 'Child Record Exists';
     public static final String CONDITION_TYPE_ALL_MATCHING_CHILDREN_SATISFY = 'All Matching Children Satisfy';
@@ -19,7 +29,8 @@ public inherited sharing class FieldTransitionConditionEvaluator {
     private static final String OPERATOR_INCLUDES = 'INCLUDES';
     private static final String OPERATOR_EXCLUDES = 'EXCLUDES';
 
-    private static final Pattern PARENT_CRITERIA_PATTERN = Pattern.compile('(?i)^\\s*(\\S+)\\s*(NOT\\s+IN|INCLUDES|EXCLUDES|IN|LIKE|!=|>=|<=|=|>|<)\\s*(.+?)\\s*$');
+    // The field name is letters, digits and underscores only, so "Amount>=100" splits into Amount, >= and 100.
+    private static final Pattern PARENT_CRITERIA_PATTERN = Pattern.compile('(?i)^\\s*([A-Za-z0-9_]+)\\s*(NOT\\s+IN|INCLUDES|EXCLUDES|IN|LIKE|!=|>=|<=|=|>|<)\\s*(.+?)\\s*$');
     private static final Pattern DATE_LITERAL_N_PATTERN = Pattern.compile('^(LAST_N_DAYS|NEXT_N_DAYS|N_DAYS_AGO|LAST_N_WEEKS|NEXT_N_WEEKS|N_WEEKS_AGO|LAST_N_MONTHS|NEXT_N_MONTHS|N_MONTHS_AGO|LAST_N_QUARTERS|NEXT_N_QUARTERS|N_QUARTERS_AGO|LAST_N_YEARS|NEXT_N_YEARS|N_YEARS_AGO):(\\d+)$');
 
     /**
@@ -174,9 +185,8 @@ public inherited sharing class FieldTransitionConditionEvaluator {
     /**
      * "Parent Field Criteria" — parses and evaluates a single SOQL-style comparison (field, operator,
      * value) directly against the record's in-memory (not-yet-saved) state. A SOQL query can't be used
-     * here since it would only see the last-committed values, not the ones being saved now. Every
-     * operator except "= null"/"!= null" treats a null field as not satisfying the comparison — the
-     * same convention IN/NOT IN and INCLUDES/EXCLUDES fall back to for a non-multi-select field.
+     * here since it would only see the last-committed values, not the ones being saved now. As in SOQL,
+     * a blank field satisfies "= null", !=, NOT IN and EXCLUDES, and no other operator.
      * @param record The record's current state.
      * @param criteria A single comparison, e.g. Amount = null, CloseDate > 2026-01-01, Status__c IN
      * ('A', 'B'), or Name LIKE 'Acme%'. Blank always passes.
@@ -196,13 +206,20 @@ public inherited sharing class FieldTransitionConditionEvaluator {
             Schema.DisplayType fieldType = getFieldDisplayType(record, fieldName);
 
             if (valueToken.equalsIgnoreCase('null')) {
-                if (operatorToken == '=') { return fieldValue == null; }
-                if (operatorToken == '!=') { return fieldValue != null; }
+                if (operatorToken == '=') { return isBlankValue(fieldValue, fieldType); }
+                if (operatorToken == '!=') { return !isBlankValue(fieldValue, fieldType); }
                 throw new FieldTransitionValidatorException('Operator "' + operatorToken + '" cannot be used with null in "' + criteria + '".');
+            }
+            if ((operatorToken == OPERATOR_INCLUDES || operatorToken == OPERATOR_EXCLUDES) && fieldType != Schema.DisplayType.MULTIPICKLIST) {
+                throw new FieldTransitionValidatorException(operatorToken + ' can only be used on multi-select picklist fields, in "' + criteria + '".');
+            }
+
+            // SOQL semantics for a blank field: it satisfies !=, NOT IN and EXCLUDES, and nothing else.
+            if (isBlankValue(fieldValue, fieldType)) {
+                return operatorToken == '!=' || operatorToken == OPERATOR_NOT_IN || operatorToken == OPERATOR_EXCLUDES;
             }
 
             if (operatorToken == OPERATOR_IN || operatorToken == OPERATOR_NOT_IN) {
-                if (fieldType != Schema.DisplayType.MULTIPICKLIST && fieldValue == null) { return false; }
                 Boolean isMatch = evaluateInClause(fieldValue, fieldType, valueToken, criteria);
                 return operatorToken == OPERATOR_IN ? isMatch : !isMatch;
             }
@@ -210,13 +227,9 @@ public inherited sharing class FieldTransitionConditionEvaluator {
                 return evaluateLike(fieldValue, valueToken, criteria);
             }
             if (operatorToken == OPERATOR_INCLUDES || operatorToken == OPERATOR_EXCLUDES) {
-                if (fieldType != Schema.DisplayType.MULTIPICKLIST) {
-                    throw new FieldTransitionValidatorException(operatorToken + ' can only be used on multi-select picklist fields, in "' + criteria + '".');
-                }
                 Boolean isMatch = evaluateIncludesClause((String) fieldValue, valueToken, criteria);
                 return operatorToken == OPERATOR_INCLUDES ? isMatch : !isMatch;
             }
-            if (fieldValue == null) { return false; }
 
             if (fieldType == Schema.DisplayType.DATE || fieldType == Schema.DisplayType.DATETIME) {
                 return evaluateDateComparison(fieldValue, fieldType, operatorToken, valueToken, criteria);
@@ -226,17 +239,16 @@ public inherited sharing class FieldTransitionConditionEvaluator {
                 if (!isQuoted(valueToken)) {
                     throw new FieldTransitionValidatorException('Multi-select picklist values must be quoted, in "' + criteria + '".');
                 }
-                Boolean includesValue = multiPicklistIncludes((String) fieldValue, unquote(valueToken));
-                if (operatorToken == '=') { return includesValue; }
-                if (operatorToken == '!=') { return !includesValue; }
+                Boolean sameValues = multiPicklistEquals((String) fieldValue, unquote(valueToken));
+                if (operatorToken == '=') { return sameValues; }
+                if (operatorToken == '!=') { return !sameValues; }
                 throw new FieldTransitionValidatorException('Operator "' + operatorToken + '" is not supported for multi-select picklists in "' + criteria + '". Use =, !=, IN, NOT IN, INCLUDES, or EXCLUDES.');
             }
 
             if (isQuoted(valueToken)) {
-                String textValue = unquote(valueToken);
-                String fieldText = String.valueOf(fieldValue);
-                if (operatorToken == '=') { return fieldText == textValue; }
-                if (operatorToken == '!=') { return fieldText != textValue; }
+                Boolean isEqual = textEquals(fieldValue, fieldType, unquote(valueToken));
+                if (operatorToken == '=') { return isEqual; }
+                if (operatorToken == '!=') { return !isEqual; }
                 throw new FieldTransitionValidatorException('Operator "' + operatorToken + '" only supports = or != for text values, in "' + criteria + '".');
             }
 
@@ -249,7 +261,7 @@ public inherited sharing class FieldTransitionConditionEvaluator {
             }
 
             Decimal numericValue = Decimal.valueOf(valueToken);
-            Decimal fieldNumber = (Decimal) fieldValue;
+            Decimal fieldNumber = toDecimal(fieldValue);
             if (operatorToken == '=') { return fieldNumber == numericValue; }
             if (operatorToken == '!=') { return fieldNumber != numericValue; }
             if (operatorToken == '>') { return fieldNumber > numericValue; }
@@ -262,6 +274,51 @@ public inherited sharing class FieldTransitionConditionEvaluator {
             FieldTransitionValidatorException wrapped = new FieldTransitionValidatorException('Failed to evaluate parent criteria "' + criteria + '": ' + ex.getMessage());
             wrapped.initCause(ex);
             throw wrapped;
+        }
+    }
+
+    /**
+     * Checks a Parent_Filter_Criteria__c value without a real record: the syntax, that the field exists, and
+     * that the operator and value make sense for the field's type. Used by
+     * FieldTransitionMetadataService.validateConfiguration.
+     * @param objectType The object the criteria is evaluated on.
+     * @param criteria The criteria to check.
+     * @return a readable problem, or null if the criteria is valid.
+     */
+    public static String findParentCriteriaProblem(Schema.SObjectType objectType, String criteria) {
+        if (String.isBlank(criteria)) { return null; }
+        Matcher matcher = PARENT_CRITERIA_PATTERN.matcher(criteria);
+        if (!matcher.matches()) { return 'Invalid criteria "' + criteria + '". Expected format: FieldApiName OPERATOR Value.'; }
+        Schema.SObjectField field = objectType.getDescribe().fields.getMap().get(matcher.group(1));
+        if (field == null) { return 'Field "' + matcher.group(1) + '" does not exist on ' + objectType + '.'; }
+        SObject sample = objectType.newSObject();
+        try {
+            sample.put(field, sampleValue(field.getDescribe().getType()));
+        } catch (Exception ex) {
+            return null; // The field can't hold a sample value (e.g. a formula): only the syntax and field were checked.
+        }
+        try {
+            parentMatchesCriteria(sample, criteria);
+            return null;
+        } catch (Exception ex) {
+            return ex.getMessage();
+        }
+    }
+
+    /**
+     * @param fieldType A field's data type.
+     * @return a non-blank value of that type, so a criteria check reaches the value parsing.
+     */
+    private static Object sampleValue(Schema.DisplayType fieldType) {
+        switch on fieldType {
+            when BOOLEAN { return true; }
+            when DATE { return Date.today(); }
+            when DATETIME { return Datetime.now(); }
+            when INTEGER { return 1; }
+            when LONG { return 1L; }
+            when DOUBLE, CURRENCY, PERCENT { return 1.0; }
+            when REFERENCE, ID { return UserInfo.getUserId(); }
+            when else { return 'x'; }
         }
     }
 
@@ -280,8 +337,8 @@ public inherited sharing class FieldTransitionConditionEvaluator {
     }
 
     /**
-     * Evaluates an IN-style value list against a field. For multi-select picklists, matches if the
-     * field includes any listed value; otherwise matches if the field equals any listed value.
+     * Evaluates an IN-style value list against a field: matches if the field equals any listed value. For a
+     * multi-select picklist, as in SOQL, a listed value matches only the exact same set of selections.
      * @param fieldValue The field's current value.
      * @param fieldType The field's data type.
      * @param valueToken The parenthesized value list, e.g. ('A', 'B').
@@ -294,20 +351,14 @@ public inherited sharing class FieldTransitionConditionEvaluator {
         }
         List<String> rawValues = splitList(valueToken.substring(1, valueToken.length() - 1));
 
-        if (fieldType == Schema.DisplayType.MULTIPICKLIST) {
-            String fieldText = fieldValue == null ? '' : (String) fieldValue;
-            for (String rawValue : rawValues) {
-                if (multiPicklistIncludes(fieldText, unquote(rawValue.trim()))) { return true; }
-            }
-            return false;
-        }
-
         for (String rawValue : rawValues) {
             String trimmed = rawValue.trim();
-            if (isQuoted(trimmed)) {
-                if (String.valueOf(fieldValue) == unquote(trimmed)) { return true; }
+            if (fieldType == Schema.DisplayType.MULTIPICKLIST) {
+                if (multiPicklistEquals((String) fieldValue, unquote(trimmed))) { return true; }
+            } else if (isQuoted(trimmed)) {
+                if (textEquals(fieldValue, fieldType, unquote(trimmed))) { return true; }
             } else {
-                if (((Decimal) fieldValue) == Decimal.valueOf(trimmed)) { return true; }
+                if (toDecimal(fieldValue) == Decimal.valueOf(trimmed)) { return true; }
             }
         }
         return false;
@@ -323,6 +374,7 @@ public inherited sharing class FieldTransitionConditionEvaluator {
      * @param criteria The full criteria string, for error messages.
      * @return true if fieldValue satisfies at least one group.
      */
+    @TestVisible
     private static Boolean evaluateIncludesClause(String fieldValue, String valueToken, String criteria) {
         if (!valueToken.startsWith('(') || !valueToken.endsWith(')')) {
             throw new FieldTransitionValidatorException('INCLUDES/EXCLUDES requires a parenthesized list, e.g. (\'A;B\', \'C\'), in "' + criteria + '".');
@@ -363,7 +415,7 @@ public inherited sharing class FieldTransitionConditionEvaluator {
 
     /**
      * Converts a SOQL LIKE pattern into the body of a regular expression, escaping literal characters
-     * and translating % to .* and _ to . .
+     * and translating % to .* and _ to . . A backslash makes the next character literal, as in SOQL.
      * @param likePattern The LIKE pattern to convert.
      * @return the equivalent regex body (not yet anchored).
      */
@@ -372,7 +424,12 @@ public inherited sharing class FieldTransitionConditionEvaluator {
         String result = '';
         for (Integer i = 0; i < likePattern.length(); i++) {
             String ch = likePattern.substring(i, i + 1);
-            if (ch == '%') {
+            if (ch == '\\' && i + 1 < likePattern.length()) {
+                // As in SOQL, a backslash makes the next character literal, e.g. \% or \_.
+                i++;
+                String escaped = likePattern.substring(i, i + 1);
+                result += specialChars.contains(escaped) ? '\\' + escaped : escaped;
+            } else if (ch == '%') {
                 result += '.*';
             } else if (ch == '_') {
                 result += '.';
@@ -455,9 +512,9 @@ public inherited sharing class FieldTransitionConditionEvaluator {
     }
 
     /**
-     * Compares a Date/Datetime field against a resolved SOQL date literal range. Single-day literals
-     * (TODAY, N_DAYS_AGO:n) support all six operators; multi-day range literals (THIS_WEEK, LAST_MONTH)
-     * only support = (falls within the range) and != (falls outside it).
+     * Compares a Date/Datetime field against a resolved SOQL date literal range, the way SOQL does: = means
+     * within the range, != outside it, > after its last day, >= from its first day, < before its first day,
+     * <= up to its last day. A single-day literal such as TODAY is a range of one day.
      * @param fieldValue The field's current value (a Date or Datetime).
      * @param fieldType Whether the field is DATE or DATETIME.
      * @param operatorToken The comparison operator.
@@ -467,25 +524,24 @@ public inherited sharing class FieldTransitionConditionEvaluator {
      */
     private static Boolean evaluateDateLiteralRange(Object fieldValue, Schema.DisplayType fieldType, String operatorToken, DateLiteralRange literalRange, String criteria) {
         Date fieldDate = fieldType == Schema.DisplayType.DATE ? (Date) fieldValue : ((Datetime) fieldValue).date();
-        if (literalRange.startDate == literalRange.endDate) {
-            if (operatorToken == '=') { return fieldDate == literalRange.startDate; }
-            if (operatorToken == '!=') { return fieldDate != literalRange.startDate; }
-            if (operatorToken == '>') { return fieldDate > literalRange.startDate; }
-            if (operatorToken == '>=') { return fieldDate >= literalRange.startDate; }
-            if (operatorToken == '<') { return fieldDate < literalRange.startDate; }
-            if (operatorToken == '<=') { return fieldDate <= literalRange.startDate; }
-            throw new FieldTransitionValidatorException('Unsupported operator "' + operatorToken + '" in "' + criteria + '".');
-        }
         Boolean withinRange = fieldDate >= literalRange.startDate && fieldDate <= literalRange.endDate;
+        // As in SOQL: = and != test the whole range, > means after it, < means before it.
         if (operatorToken == '=') { return withinRange; }
         if (operatorToken == '!=') { return !withinRange; }
-        throw new FieldTransitionValidatorException('Operator "' + operatorToken + '" only supports = or != with range-based date literals like THIS_WEEK, in "' + criteria + '".');
+        if (operatorToken == '>') { return fieldDate > literalRange.endDate; }
+        if (operatorToken == '>=') { return fieldDate >= literalRange.startDate; }
+        if (operatorToken == '<') { return fieldDate < literalRange.startDate; }
+        if (operatorToken == '<=') { return fieldDate <= literalRange.endDate; }
+        throw new FieldTransitionValidatorException('Unsupported operator "' + operatorToken + '" in "' + criteria + '".');
     }
 
     /**
-     * Resolves a SOQL date literal (TODAY, THIS_WEEK, LAST_N_DAYS:30, etc) into a concrete date range.
-     * Weeks are treated as starting on Sunday. Quarters are calendar quarters. Fiscal-year literals
-     * (THIS_FISCAL_YEAR and similar) aren't supported, since they depend on org fiscal year settings.
+     * Resolves a SOQL date literal (TODAY, THIS_WEEK, LAST_N_DAYS:30, etc) into a concrete date range, with
+     * SOQL's boundaries: LAST_N_DAYS:n includes today, NEXT_N_DAYS:n starts tomorrow, and the N_WEEKS,
+     * N_MONTHS, N_QUARTERS and N_YEARS literals cover whole periods before or after the current one.
+     * Weeks start on the running user's locale's first day, as in SOQL. Quarters are calendar quarters.
+     * Fiscal-year literals (THIS_FISCAL_YEAR and similar) aren't supported, since they depend on org
+     * fiscal year settings.
      * @param upperToken The literal, already uppercased.
      * @return the resolved range, or null if upperToken isn't a recognized date literal.
      */
@@ -511,20 +567,22 @@ public inherited sharing class FieldTransitionConditionEvaluator {
         if (!nMatcher.matches()) { return null; }
         String prefix = nMatcher.group(1);
         Integer n = Integer.valueOf(nMatcher.group(2));
+        Date weekStart = today.toStartOfWeek();
+        Date monthStart = today.toStartOfMonth();
         if (prefix == 'LAST_N_DAYS') { return new DateLiteralRange(today.addDays(-n), today); }
-        if (prefix == 'NEXT_N_DAYS') { return new DateLiteralRange(today, today.addDays(n)); }
+        if (prefix == 'NEXT_N_DAYS') { return new DateLiteralRange(today.addDays(1), today.addDays(n)); }
         if (prefix == 'N_DAYS_AGO') { return singleDay(today.addDays(-n)); }
-        if (prefix == 'LAST_N_WEEKS') { return new DateLiteralRange(today.addDays(-7 * n), today); }
-        if (prefix == 'NEXT_N_WEEKS') { return new DateLiteralRange(today, today.addDays(7 * n)); }
-        if (prefix == 'N_WEEKS_AGO') { return weekRange(today.addDays(-7 * n), 0); }
-        if (prefix == 'LAST_N_MONTHS') { return new DateLiteralRange(today.addMonths(-n), today); }
-        if (prefix == 'NEXT_N_MONTHS') { return new DateLiteralRange(today, today.addMonths(n)); }
+        if (prefix == 'LAST_N_WEEKS') { return new DateLiteralRange(weekStart.addDays(-7 * n), weekStart.addDays(-1)); }
+        if (prefix == 'NEXT_N_WEEKS') { return new DateLiteralRange(weekStart.addDays(7), weekStart.addDays(7 * (n + 1) - 1)); }
+        if (prefix == 'N_WEEKS_AGO') { return weekRange(today, -n); }
+        if (prefix == 'LAST_N_MONTHS') { return new DateLiteralRange(monthStart.addMonths(-n), monthStart.addDays(-1)); }
+        if (prefix == 'NEXT_N_MONTHS') { return new DateLiteralRange(monthStart.addMonths(1), monthStart.addMonths(n + 1).addDays(-1)); }
         if (prefix == 'N_MONTHS_AGO') { Date d = today.addMonths(-n); return monthRange(d.year(), d.month()); }
-        if (prefix == 'LAST_N_QUARTERS') { return new DateLiteralRange(today.addMonths(-3 * n), today); }
-        if (prefix == 'NEXT_N_QUARTERS') { return new DateLiteralRange(today, today.addMonths(3 * n)); }
-        if (prefix == 'N_QUARTERS_AGO') { return quarterRange(today.addMonths(-3 * n), 0); }
-        if (prefix == 'LAST_N_YEARS') { return new DateLiteralRange(today.addYears(-n), today); }
-        if (prefix == 'NEXT_N_YEARS') { return new DateLiteralRange(today, today.addYears(n)); }
+        if (prefix == 'LAST_N_QUARTERS') { return new DateLiteralRange(quarterRange(today, -n).startDate, quarterRange(today, -1).endDate); }
+        if (prefix == 'NEXT_N_QUARTERS') { return new DateLiteralRange(quarterRange(today, 1).startDate, quarterRange(today, n).endDate); }
+        if (prefix == 'N_QUARTERS_AGO') { return quarterRange(today, -n); }
+        if (prefix == 'LAST_N_YEARS') { return new DateLiteralRange(Date.newInstance(today.year() - n, 1, 1), Date.newInstance(today.year() - 1, 12, 31)); }
+        if (prefix == 'NEXT_N_YEARS') { return new DateLiteralRange(Date.newInstance(today.year() + 1, 1, 1), Date.newInstance(today.year() + n, 12, 31)); }
         if (prefix == 'N_YEARS_AGO') { return yearRange(today.year() - n); }
         return null;
     }
@@ -540,14 +598,11 @@ public inherited sharing class FieldTransitionConditionEvaluator {
     /**
      * @param anchor Any date within the reference week.
      * @param weekOffset 0 for anchor's own week, -1 for the previous week, 1 for the next week.
-     * @return the Sunday-to-Saturday range for that week.
+     * @return that week's range, starting on the running user's locale's first day of the week.
      */
     private static DateLiteralRange weekRange(Date anchor, Integer weekOffset) {
-        Datetime anchorDatetime = Datetime.newInstance(anchor, Time.newInstance(0, 0, 0, 0));
-        Integer isoDayOfWeek = Integer.valueOf(anchorDatetime.format('u'));
-        Integer daysSinceSunday = Math.mod(isoDayOfWeek, 7);
-        Date sunday = anchor.addDays(-daysSinceSunday).addDays(7 * weekOffset);
-        return new DateLiteralRange(sunday, sunday.addDays(6));
+        Date weekStart = anchor.toStartOfWeek().addDays(7 * weekOffset);
+        return new DateLiteralRange(weekStart, weekStart.addDays(6));
     }
 
     /**
@@ -594,6 +649,68 @@ public inherited sharing class FieldTransitionConditionEvaluator {
             if (selected == targetValue) { return true; }
         }
         return false;
+    }
+
+    /**
+     * SOQL's = on a multi-select picklist: the same set of selections, in any order, ignoring case.
+     * @param fieldValue The multi-select picklist's raw stored value, e.g. "A;B".
+     * @param target The value to compare with, e.g. "B;A".
+     * @return true if both hold exactly the same selections.
+     */
+    @TestVisible
+    private static Boolean multiPicklistEquals(String fieldValue, String target) {
+        return selectionSet(fieldValue).equals(selectionSet(target));
+    }
+
+    /**
+     * @param value A multi-select picklist value, e.g. "A; B".
+     * @return its selections, trimmed and lowercased.
+     */
+    private static Set<String> selectionSet(String value) {
+        Set<String> selections = new Set<String>();
+        if (String.isBlank(value)) { return selections; }
+        for (String selection : value.split(';')) {
+            if (String.isNotBlank(selection)) { selections.add(selection.trim().toLowerCase()); }
+        }
+        return selections;
+    }
+
+    /**
+     * Compares a field with a quoted value the way SOQL does: ignoring case, and for Id and lookup fields,
+     * accepting the 15- or the 18-character form of the Id.
+     * @param fieldValue The field's current value. Not null.
+     * @param fieldType The field's data type.
+     * @param text The unquoted comparison value.
+     * @return true if they're equal.
+     */
+    private static Boolean textEquals(Object fieldValue, Schema.DisplayType fieldType, String text) {
+        if (fieldType == Schema.DisplayType.REFERENCE || fieldType == Schema.DisplayType.ID) {
+            try {
+                return Id.valueOf(String.valueOf(fieldValue)) == Id.valueOf(text);
+            } catch (StringException ex) {
+                return false;
+            }
+        }
+        return String.valueOf(fieldValue).equalsIgnoreCase(text);
+    }
+
+    /**
+     * @param fieldValue A field's value.
+     * @param fieldType The field's data type.
+     * @return true if the field is empty: null, or a multi-select picklist with no selection.
+     */
+    private static Boolean isBlankValue(Object fieldValue, Schema.DisplayType fieldType) {
+        if (fieldValue == null) { return true; }
+        return fieldType == Schema.DisplayType.MULTIPICKLIST && String.isBlank((String) fieldValue);
+    }
+
+    /**
+     * @param fieldValue A numeric field value: Decimal, Double, Integer or Long.
+     * @return the same value as a Decimal.
+     */
+    private static Decimal toDecimal(Object fieldValue) {
+        if (fieldValue instanceof Decimal) { return (Decimal) fieldValue; }
+        return Decimal.valueOf(String.valueOf(fieldValue));
     }
 
     /**

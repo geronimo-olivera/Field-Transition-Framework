@@ -11,20 +11,24 @@ Stage-gating logic (an Opportunity can't move to a given stage until X, Y, Z are
 - **Configuration over code** — which field, which transition, and which conditions block it live in `Field_Transition_Rule__mdt` and `Transition_Condition__mdt` records. Adding, disabling, or changing a requirement doesn't require touching Apex.
 - **Works on any object and any field** — nothing in the framework is specific to Opportunity/StageName or any other object. `Object_API_Name__c` and `Field_API_Name__c` are plain text.
 - **Four ways to express a requirement** — a related child record must (or must not) exist, a field on the record itself must match a comparison, or a combination of both. See [`docs/USAGE.md`](docs/USAGE.md) for the full reference.
-- **Bulk-safe** — validating a batch of records costs one query per distinct condition that batch actually needs, not one per record. A 500-record update doesn't come close to the governor limit.
+- **Bulk-safe** — validating a batch of records costs one query per distinct condition that batch actually needs, not one per record. A 1,000-record update used 10 queries in total.
+- **SOQL semantics** — `Parent_Filter_Criteria__c` behaves like a SOQL `WHERE` clause, including blank fields, multi-select picklists, 15-character Ids and date literals, verified against real SOQL on 86 criteria.
+- **Clear errors** — a blocked save names the field and lists exactly which requirements are missing.
+- **Same answer for every user** — conditions are evaluated without sharing, so the checklist and the save always agree, whoever is looking.
 - **A companion checklist, not just a blocker** — `fieldTransitionChecklist` is a Lightning web component you can drop on any record page. It shows every reachable next value for a governed field and which of its conditions are already met, before the user tries to save.
 
 See [`docs/USAGE.md`](docs/USAGE.md) for how to configure a rule, every supported operator and field type with worked examples, and what to avoid.
 
 ## Contents
 
-- [`force-app/main/default/classes/FieldTransitionValidator.cls`](force-app/main/default/classes/FieldTransitionValidator.cls) — call this from a trigger's `before update` to block a transition. Bulk-safe.
+- [`force-app/main/default/classes/FieldTransitionValidator.cls`](force-app/main/default/classes/FieldTransitionValidator.cls) — call this from a trigger's `before update` (and `before insert`, for `Apply_On_Insert__c` rules) to block a transition. Bulk-safe.
 - [`force-app/main/default/classes/FieldTransitionConditionEvaluator.cls`](force-app/main/default/classes/FieldTransitionConditionEvaluator.cls) — evaluates a single condition against a record. Shared by the validator and the checklist service; has no idea which one is calling it.
-- [`force-app/main/default/classes/FieldTransitionMetadataService.cls`](force-app/main/default/classes/FieldTransitionMetadataService.cls) — read-only access to the two custom metadata types.
+- [`force-app/main/default/classes/FieldTransitionMetadataService.cls`](force-app/main/default/classes/FieldTransitionMetadataService.cls) — read-only access to the two custom metadata types, and `validateConfiguration()` to find mistakes in them.
 - [`force-app/main/default/classes/FieldTransitionRequirementService.cls`](force-app/main/default/classes/FieldTransitionRequirementService.cls) — builds the read-only checklist (never blocks anything) for the LWC.
 - [`force-app/main/default/classes/FieldTransitionRequirementController.cls`](force-app/main/default/classes/FieldTransitionRequirementController.cls) — thin `@AuraEnabled` entry point the LWC calls.
 - [`force-app/main/default/classes/FieldTransitionFrameworkTest.cls`](force-app/main/default/classes/FieldTransitionFrameworkTest.cls) — test coverage. Doesn't cover everything — see [Tests](#tests) below.
-- [`force-app/main/default/lwc/fieldTransitionChecklist/`](force-app/main/default/lwc/fieldTransitionChecklist) — drop this on a record page to show pending requirements.
+- [`force-app/main/default/lwc/fieldTransitionChecklist/`](force-app/main/default/lwc/fieldTransitionChecklist) — drop this on a record page to show pending requirements. Has Jest tests in `__tests__`.
+- [`force-app/main/default/permissionsets/Field_Transition_Checklist.permissionset-meta.xml`](force-app/main/default/permissionsets/Field_Transition_Checklist.permissionset-meta.xml) — assign it to users who should see the checklist.
 - [`force-app/main/default/objects/Field_Transition_Rule__mdt/`](force-app/main/default/objects/Field_Transition_Rule__mdt) and [`Transition_Condition__mdt/`](force-app/main/default/objects/Transition_Condition__mdt) — the two custom metadata types. This repo ships the types, fields, and layouts only — no records. Your rules and conditions are your org's own configuration; see [`docs/USAGE.md`](docs/USAGE.md) for how to create them.
 
 ## Custom metadata: `Field_Transition_Rule__mdt`
@@ -39,6 +43,7 @@ One record per governed transition (one field, one target value, optionally scop
 | `From_Value__c` | Text | The value the field must be changing **from**. Leave blank to match a transition from any value. |
 | `Is_Active__c` | Checkbox | Must be `true` for the rule to be enforced at all. |
 | `Order__c` | Number | Evaluation order relative to other active rules on the same object/field. |
+| `Apply_On_Insert__c` | Checkbox | Also check this rule when a record is created directly with `To_Value__c`. Needs a blank `From_Value__c` and a trigger that runs in `before insert`. |
 
 ## Custom metadata: `Transition_Condition__mdt`
 
@@ -58,14 +63,29 @@ One or more per rule. **Every** active condition on a rule must be satisfied for
 
 ## Tests
 
-`FieldTransitionFrameworkTest` calls `FieldTransitionValidator`, `FieldTransitionConditionEvaluator`, `FieldTransitionRequirementService`, and `FieldTransitionRequirementController` directly — it doesn't go through a trigger, because wiring this framework to an object's trigger is your own org's setup, not something this repo ships (see [Wiring it up](docs/USAGE.md#wiring-it-into-your-org) in the usage doc). It covers, among other things:
+**Apex:** `FieldTransitionFrameworkTest` has 18 tests and doesn't depend on your org's configuration: each test builds its rules and conditions in memory and passes them in through `FieldTransitionMetadataService`'s test overrides. They cover every operator and field type with SOQL's semantics, every date literal, all four condition types with real child records, 200 records in one validation, the insert rule, the error message, the checklist, a standard user, and every mistake `validateConfiguration()` reports. Coverage is 100% on the validator, the checklist service, the controller and the metadata service, and 94% on the evaluator (the multi-select branch needs a multi-select field, which standard objects don't have; its matching is tested directly). One test, `activeConfigurationInThisOrgIsValid`, checks **your** real rules on every deploy.
 
-- Every scalar comparison type `Parent Field Criteria` supports (string, picklist, number, percent, currency, boolean, date, datetime — including the UTC/`Z` behavior) and the null-handling convention.
-- All four condition types, backed by real child records.
-- Bulk behavior: the query cost of validating many records stays flat instead of growing per record, and one misconfigured condition doesn't take down the others in the same batch.
-- The read-only checklist service and its controller, including objects with no configured rules.
+**LWC:** 7 Jest tests, 100% of the component's lines. Run them with `npm install` and `npm test`.
 
-It does **not** cover everything, and it isn't meant to. Multi-select picklist and record-type comparisons, for example, exercise the exact same code paths already covered by the other operator tests, so they aren't duplicated here — but they also depend on fields/record types this repo has no way of guaranteeing exist in your org, so there's no dedicated test for them either. If your org configures rules using field types or scenarios this test class doesn't touch, that's on you to cover with your own tests, the same way it would be for any framework you install rather than write yourself.
+### Tested end to end
+
+In a scratch org with three custom objects (projects, tasks and private reviews) and 11 rules with 24 conditions across Opportunity, Case, Lead, Account and those objects:
+
+| Check | Result |
+|---|---|
+| 25 save scenarios across five objects, every condition type | All as expected, each block listing what's missing |
+| Evaluator vs. real SOQL, 86 criteria on 26 records | Identical results |
+| 1,000 records in one save | Correct for every record, 10 queries |
+| Record created directly at a gated value (`Apply_On_Insert__c`) | Blocked when a requirement is missing |
+| Standard user without access to a qualifying child record | The checklist (in Lightning) and the save both count it as met |
+
+To run the Apex tests in a scratch org:
+
+```bash
+sf org create scratch --definition-file config/project-scratch-def.json --alias ftf --duration-days 1 --target-dev-hub <your-dev-hub>
+sf project deploy start --manifest manifest/package.xml --target-org ftf
+sf apex run test --target-org ftf --test-level RunLocalTests --code-coverage --wait 20
+```
 
 ## Deploy to an org
 
@@ -83,7 +103,7 @@ You need [VS Code with the Salesforce Extension Pack](https://developer.salesfor
 2. Authenticate to your target org (`SFDX: Authorize an Org`, or `sf org login web` from the CLI).
 3. Right-click [`manifest/package.xml`](manifest/package.xml) and choose **SFDX: Deploy Source in Manifest to Org**.
 
-That deploys the Apex classes, both custom metadata types with their fields and layouts, the custom labels, and the checklist LWC — everything except your own rules/conditions and the trigger that calls `FieldTransitionValidator`, both of which are yours to create. See [`docs/USAGE.md`](docs/USAGE.md) for both.
+That deploys the Apex classes, both custom metadata types with their fields and layouts, the custom labels, the checklist LWC and its permission set — everything except your own rules/conditions and the trigger that calls `FieldTransitionValidator`, both of which are yours to create. See [`docs/USAGE.md`](docs/USAGE.md) for both.
 
 ## Documentation
 

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Apply_On_Insert__c</fullName>
+    <defaultValue>false</defaultValue>
+    <description>Also enforce this rule when a record is created directly with To_Value__c, so nobody can skip the requirements by creating a record at the final stage. Only applies to rules with a blank From_Value__c, and the trigger must call FieldTransitionValidator in before insert too. Child-record conditions can't be met on insert, since the record has no children yet.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>Also check this rule when a record is created directly with To Value. Needs a blank From Value and a before insert trigger.</inlineHelpText>
+    <label>Apply On Insert</label>
+    <type>Checkbox</type>
+</CustomField>

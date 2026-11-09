@@ -57,6 +57,10 @@
             </layoutItems>
             <layoutItems>
                 <behavior>Edit</behavior>
+                <field>Apply_On_Insert__c</field>
+            </layoutItems>
+            <layoutItems>
+                <behavior>Edit</behavior>
                 <field>Order__c</field>
             </layoutItems>
         </layoutColumns>
